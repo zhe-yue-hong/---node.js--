@@ -115,7 +115,6 @@ for (const filename of filenames) {
 // 其他自定義路由
 app.use('/reserve', reservationRoutes)
 app.use('/auth', memberRoutes)
-// 設定支付路由，使用 '/payment' 作為基礎路徑
 app.use('/payment', paymentRoutes)
 app.use('/history', historyRoutes)
 
@@ -131,7 +130,7 @@ app.use(function (err, req, res, next) {
   res.status(err.status || 500).send({ error: err })
 })
 
-// 建立 HTTP 伺服器用於聊天
+
 const server = http.createServer(app)
 const io = new Server(server, {
   cors: {
@@ -140,21 +139,18 @@ const io = new Server(server, {
   },
 })
 
-const users = {} // 用來儲存每個使用者的socket.id
-const adminSockets = new Set() // 用來儲存管理者的socket.id
+const users = {}
+const adminSockets = new Set()
 
 io.on('connection', (socket) => {
   console.log('使用者連線:', socket.id)
 
-  // 傳送歷史資料給剛登入的用戶
-  // sendHistoryMessages(socket);
   socket.on('sendMessage', async (message) => {
     console.log('Message received:', message)
 
     try {
       const connection = await db.getConnection()
 
-      // 查詢資料庫中最新一條訊息的 isRead 狀態
       const [latestMessage] = await connection.query(
         'SELECT isRead FROM messages ORDER BY timestamp DESC LIMIT 1'
       )
@@ -162,7 +158,6 @@ io.on('connection', (socket) => {
         ? latestMessage[0].isRead
         : false
 
-      // 將訊息傳入資料表messages
       const [results] = await connection.query('INSERT INTO messages SET ?', {
         room: message.room,
         sender: message.sender,
@@ -174,10 +169,7 @@ io.on('connection', (socket) => {
       connection.release()
       console.log('訊息儲存的欄位 id:', results.insertId)
 
-      // 新增 timestamp 到 message 物件
       message.timestamp = new Date()
-
-      // 發送新訊息給所有客戶端，並設置 status
       io.emit('newMessage', {
         ...message,
         id: results.insertId,
@@ -189,22 +181,17 @@ io.on('connection', (socket) => {
   })
 
   socket.on('roomRestart', async () => {
-    // 當收到 roomRestart 事件時，調用 fetchLastMessage
     io.emit('roomRestart')
   })
   socket.on('typing', (data) => {
     console.log('正在輸入中')
     console.log(data)
-    // socket.to(data.room).emit('typing', data) // 使用 socket.to 而不是 io.to，這樣事件不會發回發送者，這是錯誤的，前端並沒有收到該訊息
     io.emit('typing', data)
   })
-  //監聽前端已讀事件
-  //只針對對方目前在此房間內的所有訊息已讀 若沒針對房號的話將會導致她在所有聊天室的訊息都已讀
   socket.on('messageRead', async (data) => {
     const { room, sender } = data
     console.log(data)
 
-    // 根據 sender 的值設置對方的 sender 值
     const otherSender = sender === 1 ? 2 : 1
     console.log(otherSender)
 
@@ -218,7 +205,6 @@ io.on('connection', (socket) => {
       console.log('消息已讀狀態已更新')
       console.log(results)
 
-      // 廣播已讀通知給房間內的所有用戶（除了發送者）
       socket.emit('messageRead', {
         id: data.id,
         sender: data.sender,
