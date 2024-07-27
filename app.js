@@ -11,6 +11,7 @@ import sessionFileStore from 'session-file-store'
 import db from './configs/mysql.js' // 引入 MySQL 連接池
 import reservationRoutes from './routes/reservation.js'
 import memberRoutes from './routes/member.js'
+import historyRoutes from './routes/history.js'
 import paymentRoutes from './routes/payment.js'
 import { fileURLToPath, pathToFileURL } from 'url'
 //這是聊天用管道 我把它設為聊天室專用
@@ -116,6 +117,7 @@ app.use('/reserve', reservationRoutes)
 app.use('/auth', memberRoutes)
 // 設定支付路由，使用 '/payment' 作為基礎路徑
 app.use('/payment', paymentRoutes)
+app.use('/history', historyRoutes)
 
 // 捕抓 404 錯誤處理
 app.use(function (req, res, next) {
@@ -144,28 +146,87 @@ const adminSockets = new Set() // 用來儲存管理者的socket.id
 io.on('connection', (socket) => {
   console.log('使用者連線:', socket.id)
 
+  // 傳送歷史資料給剛登入的用戶
+  // sendHistoryMessages(socket);
   socket.on('sendMessage', async (message) => {
     console.log('Message received:', message)
 
     try {
       const connection = await db.getConnection()
+
+      // 查詢資料庫中最新一條訊息的 isRead 狀態
+      const [latestMessage] = await connection.query(
+        'SELECT isRead FROM messages ORDER BY timestamp DESC LIMIT 1'
+      )
+      const latestIsReadStatus = latestMessage[0]
+        ? latestMessage[0].isRead
+        : false
+
+      // 將訊息傳入資料表messages
       const [results] = await connection.query('INSERT INTO messages SET ?', {
         room: message.room,
         sender: message.sender,
         isMerchant: message.isMerchant,
         message: message.message,
         timestamp: new Date(),
+        isRead: message.isRead || false,
       })
       connection.release()
       console.log('訊息儲存的欄位 id:', results.insertId)
-      io.emit('newMessage', message)
+
+      // 新增 timestamp 到 message 物件
+      message.timestamp = new Date()
+
+      // 發送新訊息給所有客戶端，並設置 status
+      io.emit('newMessage', {
+        ...message,
+        id: results.insertId,
+        status: latestIsReadStatus ? 'read' : 'sent',
+      })
     } catch (error) {
       console.error('無法傳入資料表:', error)
     }
   })
 
+  socket.on('roomRestart', async () => {
+    // 當收到 roomRestart 事件時，調用 fetchLastMessage
+    io.emit('roomRestart')
+  })
   socket.on('typing', (data) => {
+    console.log('正在輸入中')
+    console.log(data)
+    // socket.to(data.room).emit('typing', data) // 使用 socket.to 而不是 io.to，這樣事件不會發回發送者，這是錯誤的，前端並沒有收到該訊息
     io.emit('typing', data)
+  })
+  //監聽前端已讀事件
+  //只針對對方目前在此房間內的所有訊息已讀 若沒針對房號的話將會導致她在所有聊天室的訊息都已讀
+  socket.on('messageRead', async (data) => {
+    const { room, sender } = data
+    console.log(data)
+
+    // 根據 sender 的值設置對方的 sender 值
+    const otherSender = sender === 1 ? 2 : 1
+    console.log(otherSender)
+
+    try {
+      const connection = await db.getConnection()
+      const [results] = await connection.query(
+        'UPDATE messages SET isRead = ? WHERE room = ? AND sender = ? AND isRead = false',
+        [true, room, otherSender]
+      )
+      connection.release()
+      console.log('消息已讀狀態已更新')
+      console.log(results)
+
+      // 廣播已讀通知給房間內的所有用戶（除了發送者）
+      socket.emit('messageRead', {
+        id: data.id,
+        sender: data.sender,
+        status: 'read',
+      })
+    } catch (error) {
+      console.error('無法更新消息已讀狀態:', error)
+    }
   })
 
   socket.on('disconnect', () => {
